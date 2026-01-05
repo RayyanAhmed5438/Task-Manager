@@ -85,8 +85,9 @@ python main.py
 
 -> Place it in the project root
 
--> Note:
-    ⚠️ The app runs safely without Firebase in offline mode.
+⚠️ Firebase credentials are not included for security reasons.
+To enable cloud sync, create a Firebase project and add `firebase_key.json`
+in the root directory. The app works fully offline without it.
 
 ## 🔐 Security Note
 
@@ -109,4 +110,5 @@ python main.py
 👤 Author
 
 **Rayyan Ahmed**
+
 Hackathon Project – Desktop Application Development
