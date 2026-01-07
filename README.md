@@ -1,7 +1,7 @@
 # 🗂️ Task Manager – Offline-First with Cloud Sync
 #----------------------------------------------------
 
-A desktop Task & To-Do Manager built using Python and PyQt5, featuring an offline-first design with optional Firebase (Google Cloud Firestore) synchronization.
+A desktop Task & To-Do Manager built using Python and PyQt5, featuring an offline-first design with Firebase (Google Cloud Firestore) synchronization.
 
 Designed for a hackathon with focus on usability, reliability, and real-world behavior.
 
@@ -22,9 +22,9 @@ Designed for a hackathon with focus on usability, reliability, and real-world be
 
 -> Uses Firebase Firestore
 
--> Fully functional offline
+-> Fully functional offline without it
 
--> Auto-syncs when internet is available
+-> Auto-syncs when internet is available at program start
 
 -> Sync status indicator:
 
@@ -114,4 +114,5 @@ in the root directory. The app works fully offline without it.
 **Rayyan Ahmed**
 
 Hackathon Project – Desktop Application Development
+
 
