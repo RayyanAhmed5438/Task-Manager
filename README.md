@@ -105,10 +105,13 @@ in the root directory. The app works fully offline without it.
 
 -> Internet loss does not affect usability
 
--> Pending changes sync automatically on reconnection
+-> In case of sync conflict (cloud and local datas differ because of internet loss mid run)
+   user get a choice to whether load data from cloud or continue with the local data depending
+   upon which data is recent
 
 👤 Author
 
 **Rayyan Ahmed**
 
 Hackathon Project – Desktop Application Development
+
