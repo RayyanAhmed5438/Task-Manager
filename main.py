@@ -2,15 +2,18 @@ import os
 import sys
 import datetime
 import json
+import copy
 from functools import partial
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 from PyQt5.QtWidgets import (QApplication,QWidget,QLabel,QLineEdit,
                              QVBoxLayout,QHBoxLayout,QPushButton,
-                             QStackedWidget,QScrollArea,QCheckBox,QRadioButton)
-from PyQt5.QtCore import QTimer,QTime,Qt, QThread, pyqtSignal, QThreadPool
+                             QStackedWidget,QScrollArea,QMessageBox,
+                             QRadioButton,QButtonGroup)
+from PyQt5.QtCore import QTimer,QTime,Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap,QFont,QFontDatabase
+from PyQt5.QtNetwork import QNetworkConfigurationManager
 
 class FirebaseCheckThread(QThread):
     result = pyqtSignal(bool)
@@ -21,25 +24,82 @@ class FirebaseCheckThread(QThread):
 
     def run(self):
         try:
-            self.db.collection("_health").document("ping").get()
+            list(self.db.collection("users").limit(1).stream())
             self.result.emit(True)
 
+        except Exception as e:
+            print("Ping Failed: ",type(e), e)
+            self.result.emit(False)    
+
+class UploadThread(QThread):
+    finished_upload = pyqtSignal(bool) 
+
+    def __init__(self, snapshot, upload_type, db, user_id):
+        super().__init__()
+        self.snapshot = snapshot
+        self.type = upload_type
+        self.db = db
+        self.user_id = user_id
+
+        self.net_manager = QNetworkConfigurationManager()
+
+    def run(self):
+        if not self.net_manager.isOnline():
+            print("Upload aborted - No Internet")
+            self.finished_upload.emit(False)
+            return
+        
+        try:
+            ref = (
+                self.db.collection("users")
+                .document(self.user_id)
+                .collection(self.type)
+            )    
+
+            if not self.net_manager.isOnline():
+                print("Upload aborted - No Internet")
+                self.finished_upload.emit(False)
+                return
+
+            for doc in ref.stream():
+
+                if not self.net_manager.isOnline():
+                    print("Upload aborted - No Internet")
+                    self.finished_upload.emit(False)
+                    return
+                
+                doc.reference.delete()
+
+            for item in self.snapshot:
+
+                if not self.net_manager.isOnline():
+                    print("Upload aborted - No Internet")
+                    self.finished_upload.emit(False)
+                    return
+
+                ref.add(item)
+
+            if self.net_manager.isOnline():
+                self.finished_upload.emit(True)    
+
+            else:
+                self.finished_upload.emit(False)    
+
         except Exception:
-            self.result.emit(False)        
+            self.finished_upload.emit(False)            
 
 class MainWindow(QWidget):
 
     def __init__(self): 
         super().__init__()
-        self.setGeometry(265,150,1400,800)
+        self.setGeometry(165,150,1600,800)
         self.setWindowTitle("Task Manager")
 
         self.user_id = "demo_user"
 
         self.firebase_ready = False
         self.online = False
-        self.cloud_dirty = False 
-        self.firebase_check_running = False
+        self.cloud_dirty = False
 
         self.setStyleSheet(self.load_style())
 
@@ -64,11 +124,11 @@ class MainWindow(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self.stack)
 
-        self.cloud_status = QLabel("☁  Cloud:\nInitializing...")
+        self.cloud_status = QLabel("☁  Cloud:\nInitializing...", self)
         self.cloud_status.setObjectName("cloud_status")
         self.cloud_status.setStyleSheet("""
                     QLabel#cloud_status {
-                        font-size: 20px;
+                        font-size: 35px;
                         padding: 6px 12px;
                         background-color: rgba(0, 0, 0, 0.6);
                         border-radius: 8px;
@@ -98,31 +158,53 @@ class MainWindow(QWidget):
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)
 
-        QTimer.singleShot(0, self.init_firebase)
+        QTimer.singleShot(0, self.init_firebase)  
 
-        self.net_timer = QTimer(self)
-        self.net_timer.timeout.connect(self.recheck_firebase)
-        self.net_timer.start(15000)
+        self.net_manager = QNetworkConfigurationManager()
+        self.net_manager.onlineStateChanged.connect(self.set_cloud_status_instant)
 
-    def recheck_firebase(self):
-        if not self.firebase_ready or self.firebase_check_running:
-            return
+    def set_cloud_status_instant(self, is_online):
+        self.online = is_online
+
+        if not is_online:
+            self.set_cloud_status("offline")  
+
+    def get_cloud_tasks(self):
+        if not (hasattr(self, "db") and self.online):
+            return []
+
+        try:
+            return [doc.to_dict() for doc in self.db.collection("users")
+                    .document(self.user_id)
+                    .collection("tasks")
+                    .stream()]
+        except Exception as e:
+            print("Cloud fetch failed: ", e)
+            return []          
         
-        self.firebase_check_running = True
+    def get_cloud_todos(self):
+        if not(hasattr(self, "db") and self.online):
+            return []
 
-        self.firebase_thread = FirebaseCheckThread(self.db)
-        self.firebase_thread.result.connect(self.on_firebase_checked)
-        self.firebase_thread.finished.connect(self.on_firebase_check_finished)
-        self.firebase_thread.finished.connect(self.firebase_thread.deleteLater)
-        self.firebase_thread.start()        
+        try:
+            return [doc.to_dict() for doc in
+                    self.db.collection("users")
+                    .document(self.user_id)
+                    .collection("todos")
+                    .stream()]
 
-    def on_firebase_check_finished(self):
-        self.firebase_check_running = False    
+        except Exception as e:
+            print("Cloud fetch failed: ", e)
+            return []    
 
     def init_firebase(self):
+        if hasattr(self, "db") and self.db is not None:
+            return
+        
         if not os.path.exists("firebase_key.json"):
             print("firebase key missing - running offline")
             self.firebase_ready = False
+            self.online = False
             self.set_cloud_status("offline")
             return
 
@@ -135,8 +217,8 @@ class MainWindow(QWidget):
             self.firebase_ready = True
 
             self.firebase_thread = FirebaseCheckThread(self.db)
-            self.firebase_thread.result.connect(self.on_firebase_checked)  
-            self.firebase_thread.finished.connect(self.firebase_thread.deleteLater) 
+            self.firebase_thread.result.connect(self.on_firebase_checked)
+            self.firebase_thread.finished.connect(self.firebase_thread.deleteLater)
             self.firebase_thread.start()
 
         except Exception as e:
@@ -144,26 +226,141 @@ class MainWindow(QWidget):
             self.firebase_ready = False    
             self.online = False
             self.set_cloud_status("offline")
-
+        
     def on_firebase_checked(self, connected):
-        if connected and self.cloud_dirty and self.firebase_check_running:
+         
+        self.online = connected  
+
+        if not connected:
+            self.set_cloud_status("offline")
             return
         
-        self.online = connected
+        cloud_tasks = self.get_cloud_tasks()
+        cloud_todos = self.get_cloud_todos()     
 
-        if connected:
-            if self.cloud_dirty:
-                self.set_cloud_status("syncing")
-                self.save_task_file()
-                self.save_todo_file()
-            else:    
-                self.set_cloud_status("synced")
-                self.load_tasks_from_firebase()
-                self.load_todos_from_firebase()    
+        if (len(cloud_tasks) != len(self.tasks)) or (len(cloud_todos) != len(self.todos_list)):
+            
+            if not hasattr(self, "sync_conflict_page"):
+                self.build_sync_conflict_page()
 
+            self.stack.setCurrentWidget(self.sync_conflict_page)
+            return    
+        
+        self.set_cloud_status("synced")
+
+    def build_sync_conflict_page(self):
+
+        cloud_tasks = self.get_cloud_tasks()
+        cloud_todos = self.get_cloud_todos()
+
+        self.sync_conflict_page = QWidget()         
+        layout = QVBoxLayout(self.sync_conflict_page)
+
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(20)
+
+        header = QLabel("SYNC CONFLICT DETECTED")
+        header.setAlignment(Qt.AlignCenter)
+        header.setStyleSheet("font-size: 38px; font-family: segoe UI; color: yellow;")
+
+        text = (
+            f"Cloud and Local Data are different:\n\n"
+            f"Local Tasks: {len(self.tasks)}\t\tLocal Todos: {len(self.todos_list)}\n"
+            f"Cloud Tasks: {len(cloud_tasks)}\t\tCloud Todos: {len(cloud_todos)}\n\n"
+            f"Select Which section should use cloud data."
+        )
+
+        info = QLabel(text)
+        info.setWordWrap(True)
+        info.setStyleSheet("color : yellow; font-size: 25px;")
+        info.setAlignment(Qt.AlignCenter)
+
+        self.task_radio_group = QButtonGroup(self)
+        self.todo_radio_group = QButtonGroup(self)
+
+        self.task_radio_cloud = QRadioButton("Tasks: Load From CLoud")
+        self.task_radio_local = QRadioButton("Tasks: Keep Local Data")
+
+        self.todo_radio_cloud = QRadioButton("Todos: Load From CLoud")
+        self.todo_radio_local = QRadioButton("Todos: Keep Local Data")
+
+        self.task_radio_group.addButton(self.task_radio_cloud)
+        self.task_radio_group.addButton(self.task_radio_local)
+
+        self.todo_radio_group.addButton(self.todo_radio_cloud)
+        self.todo_radio_group.addButton(self.todo_radio_local)
+
+        for radio in (self.task_radio_cloud, self.task_radio_local,
+                      self.todo_radio_cloud, self.todo_radio_local):
+            
+            radio.setStyleSheet("font-size: 26px; padding: 10px; color: lime;")
+
+        if len(cloud_tasks) >= len(self.tasks):
+            self.task_radio_cloud.setChecked(True)
         else:
-            self.set_cloud_status("offline")                  
+            self.task_radio_local.setChecked(True)
 
+        if len(cloud_todos) >= len(self.todos_list):
+            self.todo_radio_cloud.setChecked(True)
+        else:
+            self.todo_radio_local.setChecked(True)            
+
+        continue_btn = QPushButton("Continue")
+        continue_btn.setObjectName("confirm_conflict")    
+        continue_btn.clicked.connect(self.apply_sync)
+
+        task = QLabel("Tasks")
+        task.setStyleSheet("color : yellow; font-size: 25px; background-color : rgba(0, 0, 0, 0.8);")
+        task.setAlignment(Qt.AlignCenter)
+
+        todo = QLabel("Todos")
+        todo.setStyleSheet("color : yellow; font-size: 25px; background-color : rgba(0, 0, 0, 0.8);")
+        todo.setAlignment(Qt.AlignCenter)
+
+        hbox1 = QHBoxLayout()
+        hbox1.addWidget(task)
+        hbox1.addWidget(todo)
+
+        hbox2 = QHBoxLayout()
+        hbox2.addWidget(self.task_radio_cloud)
+        hbox2.addWidget(self.todo_radio_cloud)
+
+        hbox3 = QHBoxLayout()
+        hbox3.addWidget(self.task_radio_local)
+        hbox3.addWidget(self.todo_radio_local)
+
+        layout.addWidget(header)
+        layout.addWidget(info)
+        layout.addLayout(hbox1)
+        layout.addLayout(hbox2)
+        layout.addLayout(hbox3)
+        layout.addWidget(continue_btn)
+
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.stack.addWidget(self.sync_conflict_page)
+
+    def apply_sync(self):
+
+        cloud_tasks = self.get_cloud_tasks()
+        cloud_todos = self.get_cloud_todos()
+
+        if self.task_radio_cloud.isChecked():
+            self.tasks = cloud_tasks
+
+        if self.todo_radio_cloud.isChecked():
+            self.todos_list = cloud_todos 
+
+        self.task_radio_cloud.setChecked(False)       
+        self.task_radio_local.setChecked(False)
+        self.todo_radio_cloud.setChecked(False)
+        self.todo_radio_local.setChecked(False)
+
+        self.save_task_file()
+        self.save_todo_file()
+
+        self.back_to_menu()
+                       
     def update_time(self):
         if hasattr(self, "time_label"):
             current_time = QTime.currentTime().toString("hh:mm:ss AP")
@@ -200,6 +397,9 @@ class MainWindow(QWidget):
         self.sort_tasks()   
 
     def load_tasks_from_firebase(self):
+        if not hasattr(self, "db") or self.db is None:
+            return
+        
         try:
             docs = (
                 self.db.collection("users")
@@ -222,6 +422,9 @@ class MainWindow(QWidget):
             self.set_cloud_status("offline")  
 
     def load_todos_from_firebase(self):
+        if not hasattr(self, "db") or self.db is None:
+            return
+        
         try:
             docs = (
                 self.db.collection("users")
@@ -244,24 +447,14 @@ class MainWindow(QWidget):
 
     def set_cloud_status(self, state):
 
-        syncing = (state == "syncing")
-
-        for name in ("addtask", "viewtask", "completetask", "todolist"):
-            btn = getattr(self, name, None)
-            if btn:
-                btn.setEnabled(not syncing)
-
-        if self.cloud_dirty and state == "syncing":
-            return
-
         if not hasattr(self, "cloud_status"):
             return
 
         if state == "synced":
-            self.cloud_status.setText("☁ Cloud-:\n   Synced")
+            self.cloud_status.setText("☁ Cloud:\n   Synced")
             self.cloud_status.setStyleSheet("""
                 QLabel#cloud_status {
-                    font-size: 25px;
+                    font-size: 35px;
                     padding: 6px 12px;
                     background-color: rgba(0, 120, 0, 0.7);
                     border-radius: 8px;
@@ -270,10 +463,10 @@ class MainWindow(QWidget):
             """)
 
         elif state == "syncing":
-            self.cloud_status.setText("☁ Cloud-:\n   Syncing…")
+            self.cloud_status.setText("☁ Cloud:\n   Syncing…")
             self.cloud_status.setStyleSheet("""
                 QLabel#cloud_status {
-                    font-size: 25px;
+                    font-size: 35px;
                     padding: 6px 12px;
                     background-color: rgba(180, 140, 0, 0.7);
                     border-radius: 8px;
@@ -282,10 +475,10 @@ class MainWindow(QWidget):
             """)
 
         else:
-            self.cloud_status.setText("☁ Cloud-:\n   Offline")
+            self.cloud_status.setText("☁ Cloud:\n   Offline")
             self.cloud_status.setStyleSheet("""
                 QLabel#cloud_status {
-                    font-size: 25px;
+                    font-size: 35px;
                     padding: 6px 12px;
                     background-color: rgba(150, 0, 0, 0.7);
                     border-radius: 8px;
@@ -336,12 +529,6 @@ class MainWindow(QWidget):
         vbox.addLayout(container_layout)
         vbox.addStretch()
 
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addStretch()
- 
-        bottom_layout.addWidget(self.cloud_status)
-        vbox.addLayout(bottom_layout)
-
         if self.menu not in [self.stack.widget(i) for i in range(self.stack.count())]:
             self.stack.addWidget(self.menu)
         
@@ -361,7 +548,7 @@ class MainWindow(QWidget):
         color: yellow;
         }
 
-        QPushButton#addtask, #confirm_todo, #delete_button_todo, #save_button_todo, #add_todos_button, #delete_button, #save_button, #viewtask, #completetask, #exit, #confirm{
+        QPushButton#addtask, #confirm_conflict, #confirm_todo, #delete_button_todo, #save_button_todo, #add_todos_button, #delete_button, #save_button, #viewtask, #completetask, #exit, #confirm{
         font-size : 40px;
         font-family : Segoe UI;
         font-weight : 600;
@@ -459,10 +646,10 @@ class MainWindow(QWidget):
         header_layout = QHBoxLayout()
 
         self.todo_name  = QLabel("To-Dos")
-        self.staus      = QLabel("Toggle Status")
+        self.status     = QLabel("Toggle Status")
         self.edit       = QLabel("Edit")
 
-        for x in (self.todo_name, self.staus, self.edit):
+        for x in (self.todo_name, self.status, self.edit):
             x.setStyleSheet("""
                             background-color : rgba(0, 255, 0, 0.4);
                             font-size: 34px; font-family : Segoe UI; 
@@ -521,12 +708,12 @@ class MainWindow(QWidget):
 
         if not self.todos_list:
             self.todo_name.setText("No")
-            self.staus.setText("To-Dos")
+            self.status.setText("To-Dos")
             self.edit.setText("Added")    
 
         else:
             self.todo_name.setText("To-Dos")
-            self.staus.setText("Toggle Status")
+            self.status.setText("Toggle Status")
             self.edit.setText("Edit")     
 
     def clear_layout(self, layout):
@@ -540,7 +727,9 @@ class MainWindow(QWidget):
                 self.clear_layout(item.layout())    
 
     def refresh_todos(self):
-        self.clear_layout(self.scroll_layout_todo)  
+        self.clear_layout(self.scroll_layout_todo) 
+
+        self.scroll_layout_todo.setSpacing(20) 
 
         for index, todo in enumerate(self.todos_list):
             row = QWidget()
@@ -622,7 +811,7 @@ class MainWindow(QWidget):
 
         self.delete_button_todo = QPushButton("Delete To-Do ❌")
         self.delete_button_todo.setObjectName("delete_button_todo")
-        self.delete_button_todo.clicked.connect(self.delete_todo)
+        self.delete_button_todo.clicked.connect(self.confirm_delete_todo)
 
         container_layout.addWidget(self.back_button_edit_todo)
         container_layout.addLayout(hbox1)
@@ -630,6 +819,42 @@ class MainWindow(QWidget):
         container_layout.addWidget(self.delete_button_todo)
 
         self.edit_todo_layout.addWidget(container , alignment= Qt.AlignCenter)
+
+    def confirm_delete_todo(self):
+        message = QMessageBox()
+        message.setWindowTitle("Confirm Deletion")
+        message.setText("Are you sure you want to delete this todo?")
+        message.setIcon(QMessageBox.Warning)    
+
+        message.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+        message.setStyleSheet("""
+                QMessageBox {
+                    background-color: #222;
+                }
+
+                QMessageBox QLabel {
+                    color: white;
+                    font-size: 22px;
+                    font-family: Segoe UI;
+                }
+
+                QMessageBox QPushButton {
+                    background-color: #444;
+                    color: lime;
+                    border: 2px solid yellow;
+                    border-radius: 10px;
+                    padding: 8px;
+                    font-size: 20px;
+                    font-weight: bold;
+                    margin-right : 120px;
+                }
+                            """)
+
+        result = message.exec_()
+
+        if result == QMessageBox.Yes:
+            self.delete_todo()
 
     def open_edit_todo(self, index):
         if index < 0 or index >= len(self.todos_list):
@@ -921,8 +1146,7 @@ class MainWindow(QWidget):
             x.setAlignment(Qt.AlignCenter)
             x.setFixedWidth(250)
             
-            header_layout.addWidget(x)
-  
+            header_layout.addWidget(x)  
         
         container_layout.addLayout(header_layout)
 
@@ -952,7 +1176,7 @@ class MainWindow(QWidget):
         self.scroll_layout_view = QVBoxLayout(self.scroll_content_view)
         self.scroll_layout_view.setAlignment(Qt.AlignTop)
         self.scroll_layout_view.setContentsMargins(0, 0, 0, 0)  
-        self.scroll_layout_view.setSpacing(4)
+        self.scroll_layout_view.setSpacing(12)
         
         self.scroll_view.setWidget(self.scroll_content_view)
 
@@ -986,6 +1210,8 @@ class MainWindow(QWidget):
         self.clear_layout(self.scroll_layout_view)  
 
         self.edit_buttons.clear()
+
+        self.scroll_layout_view.setSpacing(12)
 
         for index,task in enumerate(self.tasks):
             
@@ -1030,7 +1256,7 @@ class MainWindow(QWidget):
             if task["priority"]:
                 row.setStyleSheet("""
                                   QWidget{
-                                  background-color : rgba(255, 215, 0, 0.4);
+                                  background-color : rgba(255, 215, 0, 0.7);
                                   border : 2px solid gold;
                                   border-radius : 10px;
                                   }""")
@@ -1083,7 +1309,7 @@ class MainWindow(QWidget):
 
         self.delete_button = QPushButton("Delete Task ❌")
         self.delete_button.setObjectName("delete_button")
-        self.delete_button.clicked.connect(partial(self.delete_task_index))
+        self.delete_button.clicked.connect(self.confirm_delete_message)
 
         self.save_button = QPushButton("Save📁")
         self.save_button.setObjectName("save_button")
@@ -1118,6 +1344,43 @@ class MainWindow(QWidget):
 
         self.edit_layout.addWidget(container, alignment=Qt.AlignCenter)
 
+    def confirm_delete_message(self):
+
+        message = QMessageBox()
+        message.setWindowTitle("Confirm Deletion")
+        message.setText("Are you sure you want to delete this task?")
+        message.setIcon(QMessageBox.Warning)    
+
+        message.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+        message.setStyleSheet("""
+                QMessageBox {
+                    background-color: #222;
+                }
+
+                QMessageBox QLabel {
+                    color: white;
+                    font-size: 22px;
+                    font-family: Segoe UI;
+                }
+
+                QMessageBox QPushButton {
+                    background-color: #444;
+                    color: lime;
+                    border: 2px solid yellow;
+                    border-radius: 10px;
+                    padding: 8px;
+                    font-size: 20px;
+                    font-weight: bold;
+                    margin-right : 120px;
+                }
+                            """)
+
+        result = message.exec_()
+
+        if result == QMessageBox.Yes:
+            self.delete_task_index()
+
     def open_edit_task_page(self, index):
         if index < 0 or index >= len(self.tasks):
             return
@@ -1136,13 +1399,13 @@ class MainWindow(QWidget):
             self.header.setText("Edit Task")
 
     def save_edited_task(self):
-        new_title = self.edit_title.text() .strip()
+        new_title = self.edit_title.text().strip()
         new_deadline = self.edit_deadline.text().strip()   
 
         if not new_title or not new_deadline:
-                self.save_button.setText("Enter All Fields!!")
-                QTimer.singleShot(2000,lambda: hasattr(self, "save_button") and self.save_button.setText("Save📁"))
-                return
+            self.save_button.setText("Enter All Fields!!")
+            QTimer.singleShot(2000,lambda: hasattr(self, "save_button") and self.save_button.setText("Save📁"))
+            return
             
         if not self.valid_date(new_deadline):
             self.save_button.setText("Invalid Format!!(Use DD-MM-YYYY)")
@@ -1223,7 +1486,7 @@ class MainWindow(QWidget):
         self.scroll_layout_complete = QVBoxLayout(self.scroll_content_complete)
         self.scroll_layout_complete.setAlignment(Qt.AlignTop)
         self.scroll_layout_complete.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout_complete.setSpacing(4)
+        self.scroll_layout_complete.setSpacing(20)
 
         self.scroll_complete.setWidget(self.scroll_content_complete)
 
@@ -1255,10 +1518,12 @@ class MainWindow(QWidget):
     def refresh_comp_tasks(self):
         self.clear_layout(self.scroll_layout_complete)   
 
+        self.scroll_layout_complete.setSpacing(20)
+
         for index, task in enumerate(self.tasks):
 
             row = QWidget()
-            row.setFixedHeight(70)
+            row.setFixedHeight(80)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(4, 4, 4, 4)
             row_layout.setSpacing(7)
@@ -1272,7 +1537,7 @@ class MainWindow(QWidget):
             priority.setObjectName("priorityBtn")
 
             status.clicked.connect(partial(self.toggle_status_task, index, status))
-            priority.toggled.connect(partial(self.set_priority, task))
+            priority.toggled.connect(lambda checked, t=task: self.set_priority(t))
 
             try:
                 task_date = datetime.datetime.strptime(task["deadline"],"%d-%m-%Y").date()
@@ -1342,7 +1607,7 @@ class MainWindow(QWidget):
 
         task["priority"] = not task["priority"]
 
-        self.sort_tasks()    
+           
         self.save_task_file()
         self.refresh_comp_tasks()
 
@@ -1376,6 +1641,13 @@ class MainWindow(QWidget):
         if hasattr(self, "bg"):
             self.bg.setGeometry(self.rect())
 
+        x = 20
+        y = self.height() - self.cloud_status.height() - 90  
+
+        self.cloud_status.adjustSize()
+
+        self.cloud_status.move(x, y) 
+
         super().resizeEvent(event)
 
     def save_todo_file(self):
@@ -1390,13 +1662,18 @@ class MainWindow(QWidget):
         
         self.set_cloud_status("syncing")
 
-        todos_snapshot = self.todos_list.copy()
+        todos_snapshot = copy.deepcopy(self.todos_list)
 
-        QThreadPool.globalInstance().start(
-            lambda: self.upload_todos_to_firebase(todos_snapshot)
+        self.todo_upload_thread = UploadThread(
+            todos_snapshot, "todos", self.db, self.user_id
         )
 
+        self.todo_upload_thread.finished_upload.connect(self.on_upload_finished)
+        self.todo_upload_thread.start()
+
     def save_task_file(self):
+        self.sort_tasks()
+
         with open("tasks.json", "w") as f:
             json.dump(self.tasks, f, indent=4)
 
@@ -1406,16 +1683,21 @@ class MainWindow(QWidget):
             self.set_cloud_status("offline")
             return
         
-        
         self.set_cloud_status("syncing")
 
-        tasks_snapshot = self.tasks.copy()
+        tasks_snapshot = copy.deepcopy(self.tasks)
 
-        QThreadPool.globalInstance().start(
-            lambda: self.upload_tasks_to_firebase(tasks_snapshot)
-        )            
+        self.upload_thread = UploadThread(
+            tasks_snapshot, "tasks", self.db, self.user_id
+        )    
+        self.upload_thread.finished_upload.connect(self.on_upload_finished)
+        self.upload_thread.start()
 
     def upload_tasks_to_firebase(self, tasks_snapshot):
+        if not hasattr(self, "db") or self.db is None:
+            QTimer.singleShot(0, lambda: self.set_cloud_status("offline"))
+            return
+        
         try:
             tasks_ref = (
                 self.db.collection("users")
@@ -1430,12 +1712,16 @@ class MainWindow(QWidget):
                 tasks_ref.add(task)
 
             self.cloud_dirty = False
-            QTimer.singleShot(0, lambda: self.set_cloud_status("synced"))
+            self.set_cloud_status("synced")
 
         except Exception:
-            QTimer.singleShot(0, lambda: self.set_cloud_status("offline"))
+            self.set_cloud_status("offline")
 
     def upload_todos_to_firebase(self, todos_snapshot):
+        if not hasattr(self, "db") or self.db is None:
+            QTimer.singleShot(0, lambda: self.set_cloud_status("offline"))
+            return
+        
         try:
             todos_ref = (
                 self.db.collection("users")
@@ -1450,10 +1736,17 @@ class MainWindow(QWidget):
                 todos_ref.add(todo)
 
             self.cloud_dirty = False 
-            QTimer.singleShot(0, lambda: self.set_cloud_status("synced"))   
+            self.set_cloud_status("synced")
 
         except Exception:
-            QTimer.singleShot(0, lambda: self.set_cloud_status("offline"))          
+            self.set_cloud_status("offline")      
+
+    def on_upload_finished(self, ok):
+        if ok:
+            self.cloud_dirty = False
+            self.set_cloud_status("synced")
+        else:
+            self.set_cloud_status("offline")    
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
