@@ -69,6 +69,7 @@ Task Manager/
     └── digit.ttf
 
 ## ⚙️ How to Run
+# Python 3.10 - 3.12 recommended
 
 pip install -r requirements.txt
 python main.py
@@ -114,6 +115,7 @@ in the root directory. The app works fully offline without it.
 **Rayyan Ahmed**
 
 Hackathon Project – Desktop Application Development
+
 
 
 
