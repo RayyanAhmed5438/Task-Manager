@@ -24,7 +24,7 @@ Designed for a hackathon with focus on usability, reliability, and real-world be
 
 -> Fully functional offline without it
 
--> Auto-syncs when internet is available at program start
+-> Auto-syncs when internet is available 
 
 -> Sync status indicator:
 
@@ -105,7 +105,7 @@ in the root directory. The app works fully offline without it.
 
 -> Internet loss does not affect usability
 
--> In case of sync conflict (cloud and local datas differ because of internet loss mid run)
+-> In case of sync conflict (cloud and local datas differ because of internet loss mid run or corrupt local json files)
    user get a choice to whether load data from cloud or continue with the local data depending
    upon which data is recent
 
@@ -114,5 +114,6 @@ in the root directory. The app works fully offline without it.
 **Rayyan Ahmed**
 
 Hackathon Project – Desktop Application Development
+
 
 
