@@ -21,33 +21,133 @@ from firebase_threads import FirebaseCheckThread
 class SyncMixin:
     def open_firebase_key_dialog(self):
         dialog = QDialog(self)
+        dialog.setObjectName("firebaseKeyDialog")
         dialog.setWindowTitle("Configure Firebase Cloud Sync")
-        dialog.resize(820, 640)
+        dialog.resize(820, 660)
+        dialog.setStyleSheet("""
+            QDialog#firebaseKeyDialog {
+                background-color: #111820;
+                color: #e8f5d0;
+                font-family: "Segoe UI";
+            }
+
+            QLabel#firebaseDialogTitle {
+                color: #ffe84a;
+                font-size: 27px;
+                font-weight: 700;
+                padding: 4px 0 2px 0;
+                background: transparent;
+            }
+
+            QLabel#firebaseDialogInstructions {
+                color: #d5ff79;
+                font-size: 15px;
+                padding: 2px 0 8px 0;
+                background: transparent;
+            }
+
+            QPlainTextEdit#firebaseKeyEditor {
+                background-color: #080c10;
+                color: #f4f7ef;
+                selection-background-color: #697b16;
+                selection-color: #ffffff;
+                border: 2px solid #e3d12b;
+                border-radius: 10px;
+                padding: 12px;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 13px;
+            }
+
+            QPlainTextEdit#firebaseKeyEditor:focus {
+                border: 2px solid #a9e83b;
+                background-color: #0a1014;
+            }
+
+            QPlainTextEdit#firebaseKeyEditor QScrollBar:vertical {
+                background: #111820;
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+                border-radius: 5px;
+            }
+
+            QPlainTextEdit#firebaseKeyEditor QScrollBar::handle:vertical {
+                background: #59636b;
+                min-height: 25px;
+                border-radius: 4px;
+            }
+
+            QDialogButtonBox QPushButton {
+                min-width: 125px;
+                min-height: 42px;
+                padding: 5px 16px;
+                background-color: rgba(31, 41, 51, 0.95);
+                color: #aaff55;
+                border: 2px solid #ffe84a;
+                border-radius: 10px;
+                font-family: "Segoe UI";
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            QDialogButtonBox QPushButton:hover {
+                background-color: #28331e;
+                color: #efffcf;
+                border: 2px solid #aaff55;
+            }
+
+            QDialogButtonBox QPushButton:pressed {
+                background-color: #48551c;
+            }
+
+            QDialogButtonBox QPushButton#saveKeyButton {
+                background-color: #26351c;
+                color: #c5ff70;
+                border: 2px solid #baff43;
+            }
+
+            QDialogButtonBox QPushButton#saveKeyButton:hover {
+                background-color: #aaff55;
+                color: #10160c;
+                border: 2px solid #d9ff9a;
+            }
+        """)
 
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("☁  FIREBASE CLOUD SETUP", dialog)
+        title.setObjectName("firebaseDialogTitle")
+        layout.addWidget(title)
+
         instructions = QLabel(
-            "Paste the complete Firebase Admin service-account JSON key downloaded "
+            "Paste the complete Firebase Admin service-account JSON downloaded "
             "from Firebase Console (not a web API key). It will be saved as "
             "firebase_key.json in the app's working directory. Keep this key private "
             "and never commit or share it."
         )
+        instructions.setObjectName("firebaseDialogInstructions")
         instructions.setWordWrap(True)
-        instructions.setStyleSheet("font-size: 16px; padding: 6px;")
         layout.addWidget(instructions)
 
         editor = QPlainTextEdit(dialog)
+        editor.setObjectName("firebaseKeyEditor")
         editor.setPlaceholderText(
             '{\n  "type": "service_account",\n  "project_id": "...",\n'
             '  "private_key": "-----BEGIN PRIVATE KEY-----\\n...",\n'
             '  "client_email": "...",\n  "token_uri": "https://oauth2.googleapis.com/token"\n}'
         )
-        editor.setStyleSheet("font-family: Consolas, monospace; font-size: 13px;")
-        layout.addWidget(editor)
+        layout.addWidget(editor, 1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel,
             parent=dialog
         )
+        save_button = buttons.button(QDialogButtonBox.Save)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        save_button.setObjectName("saveKeyButton")
+        save_button.setText("Save Key")
+        cancel_button.setText("Cancel")
         buttons.accepted.connect(lambda: save_key())
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
