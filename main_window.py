@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget
     
 )
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap, QFont, QFontDatabase
 from PyQt5.QtNetwork import QNetworkConfigurationManager
 
@@ -18,6 +18,15 @@ from ui import UiMixin
 from todos import TodosMixin
 from tasks import TasksMixin
 from storage import StorageMixin
+
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class MainWindow(SyncMixin, UiMixin, TodosMixin, TasksMixin, StorageMixin, QWidget):
@@ -85,8 +94,10 @@ class MainWindow(SyncMixin, UiMixin, TodosMixin, TasksMixin, StorageMixin, QWidg
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self.stack)
 
-        self.cloud_status = QLabel("☁  Cloud:\nInitializing...", self)
+        self.cloud_status = ClickableLabel("☁  Cloud:\nInitializing...", self)
         self.cloud_status.setMouseTracking(True)
+        self.cloud_status.setCursor(Qt.PointingHandCursor)
+        self.cloud_status.clicked.connect(self.open_firebase_key_dialog)
         self.cloud_status.setObjectName("cloud_status")
         self.cloud_status.setStyleSheet("""
                     QLabel#cloud_status {
