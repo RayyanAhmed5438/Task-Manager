@@ -1,7 +1,8 @@
 
 
 import os
-
+import json
+import tempfile
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -9,7 +10,8 @@ from firebase_admin import credentials, firestore
 from PyQt5.QtWidgets import (
     QWidget, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton,
-    QRadioButton, QButtonGroup
+    QRadioButton, QButtonGroup, QDialog, QPlainTextEdit,
+    QMessageBox, QDialogButtonBox
     
 )
 from PyQt5.QtCore import QTimer, Qt
@@ -17,6 +19,155 @@ from PyQt5.QtCore import QTimer, Qt
 from firebase_threads import FirebaseCheckThread
 
 class SyncMixin:
+    def open_firebase_key_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configure Firebase Cloud Sync")
+        dialog.resize(820, 640)
+
+        layout = QVBoxLayout(dialog)
+        instructions = QLabel(
+            "Paste the complete Firebase Admin service-account JSON key downloaded "
+            "from Firebase Console (not a web API key). It will be saved as "
+            "firebase_key.json in the app's working directory. Keep this key private "
+            "and never commit or share it."
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("font-size: 16px; padding: 6px;")
+        layout.addWidget(instructions)
+
+        editor = QPlainTextEdit(dialog)
+        editor.setPlaceholderText(
+            '{\n  "type": "service_account",\n  "project_id": "...",\n'
+            '  "private_key": "-----BEGIN PRIVATE KEY-----\\n...",\n'
+            '  "client_email": "...",\n  "token_uri": "https://oauth2.googleapis.com/token"\n}'
+        )
+        editor.setStyleSheet("font-family: Consolas, monospace; font-size: 13px;")
+        layout.addWidget(editor)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel,
+            parent=dialog
+        )
+        buttons.accepted.connect(lambda: save_key())
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        def save_key():
+            raw_key = editor.toPlainText().strip()
+            if not raw_key:
+                QMessageBox.warning(
+                    dialog, "Firebase key required",
+                    "Paste the complete service-account JSON key before saving."
+                )
+                return
+
+            try:
+                key_data = json.loads(raw_key)
+            except json.JSONDecodeError as exc:
+                QMessageBox.warning(
+                    dialog, "Invalid JSON",
+                    f"The key is not valid JSON (line {exc.lineno}, column {exc.colno}). "
+                    "Copy the entire downloaded JSON file and try again."
+                )
+                return
+
+            required_fields = (
+                "type", "project_id", "private_key", "client_email", "token_uri"
+            )
+            if (
+                not isinstance(key_data, dict)
+                or key_data.get("type") != "service_account"
+                or any(not key_data.get(field) for field in required_fields)
+            ):
+                QMessageBox.warning(
+                    dialog, "Invalid service-account key",
+                    "This does not look like a complete Firebase Admin service-account "
+                    "key. Paste the entire JSON file downloaded from Firebase Console."
+                )
+                return
+
+            try:
+                # Validate the credential structure before replacing any existing file.
+                credentials.Certificate(key_data)
+            except Exception:
+                QMessageBox.warning(
+                    dialog, "Invalid service-account key",
+                    "Firebase could not read this service-account key. Check that you "
+                    "copied the complete, unmodified JSON key file."
+                )
+                return
+
+            # If the Admin SDK has already initialized, the new credentials cannot
+            # safely replace that live app in-place. Save the key and apply it next launch.
+            firebase_already_initialized = bool(firebase_admin._apps) or (
+                getattr(self, "db", None) is not None
+            )
+
+            key_path = os.path.abspath("firebase_key.json")
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=os.path.dirname(key_path),
+                    prefix=".firebase_key_",
+                    suffix=".tmp",
+                    delete=False
+                ) as key_file:
+                    temp_path = key_file.name
+                    json.dump(key_data, key_file, indent=2)
+                    key_file.write("\n")
+
+                try:
+                    os.chmod(temp_path, 0o600)
+                except OSError:
+                    # Some platforms do not support POSIX-style file permissions.
+                    pass
+
+                # Atomic replacement prevents a partially-written credentials file.
+                os.replace(temp_path, key_path)
+                temp_path = None
+            except Exception:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+                QMessageBox.critical(
+                    dialog, "Could not save key",
+                    "The key could not be saved to firebase_key.json. Check write "
+                    "permissions for the application's working directory."
+                )
+                return
+
+            self.key_missing = False
+            dialog.accept()
+
+            if firebase_already_initialized:
+                QMessageBox.information(
+                    self, "Firebase key saved",
+                    "The key was saved to firebase_key.json. Firebase is already "
+                    "initialized in this session, so close and reopen the app to apply "
+                    "the new key."
+                )
+                return
+
+            self.init_firebase()
+            if self.firebase_ready:
+                QMessageBox.information(
+                    self, "Firebase key saved",
+                    "The key was saved and Firebase initialization has started. "
+                    "The cloud status will update when the connection check completes."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Firebase not initialized",
+                    "The key was saved, but Firebase could not initialize. Verify that "
+                    "the service-account key is active and check the console for details."
+                )
+
+        dialog.exec_()
+
     def start_auto_reconnect(self):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_firebase_reconnect)
